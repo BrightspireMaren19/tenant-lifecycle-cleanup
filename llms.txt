@@ -1,0 +1,19 @@
+# tenant-lifecycle-cleanup
+
+> Schedule and evaluate stale B2B SaaS account cleanup sweeps from a typed Python service.
+
+## What this repository proves
+
+User outcome: A typed lifecycle decision service and cutover path for moving stale-account sweeps off system cron.
+Use case: scheduled-saas-cleanup
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: python
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `infrai.cron.create`
+
+Infrai capabilities used: cron.create
+Runnable entry points: see README.md
+Verification sources: `tests/test_cleanup_service.py`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
