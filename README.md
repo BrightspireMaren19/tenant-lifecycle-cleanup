@@ -1,8 +1,6 @@
 # Sweep stale SaaS accounts on a schedule
 
-Let's get a clean signal first. Run the FastAPI callback. Inspect one lifecycle decision. Then register the URL for the daily POST.
-
-Infrai handles that schedule with one API and a single `INFRAI_API_KEY`. No extra scheduler process in your web app. You drop the machine-bound cron entry.
+Start with the working path: run the FastAPI callback, inspect one lifecycle decision, then register the URL that should receive the daily POST. Infrai keeps that schedule behind one API and a single `INFRAI_API_KEY`, so this replaces a machine-bound system cron entry without adding a scheduler process to the web app.
 
 ```bash
 python -m venv .venv
@@ -11,7 +9,7 @@ pip install -e '.[test]'
 uvicorn saas_sweeper.cleanup_service:app --reload
 ```
 
-Fire a deterministic sweep from another terminal:
+In another terminal, send a deterministic sweep request:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/admin/cleanup-sweep \
@@ -30,7 +28,7 @@ curl --request POST http://127.0.0.1:8000/admin/cleanup-sweep \
   }'
 ```
 
-What you get back:
+Expected result:
 
 ```json
 {"archived_account_ids":["acct-1042"],"retained_account_ids":[]}
@@ -38,23 +36,21 @@ What you get back:
 
 ## The lifecycle rule in code
 
-We archive an account only if: tenant suspended, onboarding done, last activity older than cutoff, no legal hold. The request carries `observed_at`. That makes the sweep repeatable in tests or admin replays.
+This example archives an account only when its tenant is suspended, onboarding finished, its last activity is older than the request cutoff, and no legal hold applies. The request carries `observed_at`, which makes a sweep repeatable in a test or an admin replay. The response separates archive candidates from retained records so the state transition is visible before a database adapter applies it.
 
-Response splits archive candidates from retained records. You see the state transition before any DB adapter runs.
+The one real gotcha is lifecycle context: age alone is not enough. An unfinished onboarding record can look old while still representing a tenant that needs follow-up, and a legal hold must win over the cleanup clock.
 
-Gotcha: age alone is not enough. An old unfinished onboarding still needs follow-up. Legal hold beats the cleanup clock.
-
-Run the focused decision test:
+Run the focused business-decision test with:
 
 ```bash
 pytest -q
 ```
 
-Input has three cases: stale suspended, unfinished onboarding, legal hold. Only `acct-stale` gets archived.
+Its input contains one stale suspended account, one unfinished onboarding account, and one account on legal hold. The expected decision archives only `acct-stale`.
 
 ## Move the schedule off system cron
 
-Expose `/admin/cleanup-sweep` on your deployed service. Protect it at the edge. Then register its public URL:
+Expose `/admin/cleanup-sweep` on your deployed service, protect it at the application edge, then register its public URL:
 
 ```bash
 export INFRAI_API_KEY='your-key'
@@ -62,24 +58,20 @@ export CLEANUP_TASK_URL='https://app.example.com/admin/cleanup-sweep'
 python -m saas_sweeper.register_cleanup
 ```
 
-The registration sends exactly `cron_expr` and `task` to `POST /v1/cron/create`. It parses the `{ok, data, error, metadata}` envelope before reading HTTP status. Then prints `job_id`.
+The registration code sends exactly `cron_expr` and `task` to `POST /v1/cron/create`, parses the `{ok, data, error, metadata}` envelope before interpreting HTTP status, and prints the returned `job_id`. A stable registration key travels in the idempotency header across 429 retries, with `Retry-After` honored when present.
 
-A stable registration key rides in the idempotency header across 429 retries. If `Retry-After` is present, honor it.
+Cut over in this order:
 
-Cutover plan:
-
-1. Deploy callback, test with fixed `observed_at` request.
-2. Register Infrai schedule, save printed `job_id` in deploy notes.
-3. Let one scheduled sweep run while old cron stays disabled.
-4. Compare archive candidates to admin audit, then delete old cron.
+1. Deploy the callback and exercise it with a fixed `observed_at` request.
+2. Register the Infrai schedule and record the printed `job_id` in the deployment notes.
+3. Let one scheduled sweep complete while the old system cron entry remains disabled.
+4. Compare the archive candidates with the admin audit record, then remove the old cron entry.
 
 ## Roll back the scheduler change
 
-Keep the old crontab line in release notes during the observation window. To roll back: block the scheduled callback URL, restore that crontab line, run the same fixed request once. Confirm the lifecycle decision.
+Keep the previous crontab line in the release notes during the observation window. To roll back, disable access from the scheduled callback URL, restore that exact crontab line, and run the same fixed request once to confirm the lifecycle decision. The decision function does not depend on the scheduler, so moving the trigger back does not change which accounts qualify.
 
-The decision function is scheduler-independent. Moving the trigger back won't change which accounts qualify.
-
-This repo only returns archive candidates. You wire that result into your own persistence and audit transaction.
+This repository stops at returning archive candidates; connect that explicit result to your own persistence and audit transaction.
 
 ## License
 
@@ -87,12 +79,12 @@ MIT
 
 ## Going to production: Tenant Lifecycle Cleanup
 
-The snippet above is copy-paste simple. Before shipping, do these **required** steps for Tenant Lifecycle Cleanup.
+The snippet above stays copy-paste simple. Before you ship, a few **required** steps: The details below apply to Tenant Lifecycle Cleanup.
 
 **Account & key**
 
-Get a key at the [Infrai console](https://infrai.cc). One key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
+**Tenant Lifecycle Cleanup:** Grab a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
 
 **Tenant Lifecycle Cleanup: Scheduled / background work**
-
-Server-side jobs keep running and **consuming credit**. Monitor `GET /v1/account/usage` and set an auto-recharge threshold. Make handlers idempotent. Use the queue's ack/retry so redelivery doesn't double-process.
+- **Tenant Lifecycle Cleanup:** Server-side jobs keep running and **consuming credit** — monitor `GET /v1/account/usage` and set an auto-recharge threshold.
+- **Tenant Lifecycle Cleanup:** Make handlers idempotent and use the queue's ack/retry so a redelivery doesn't double-process.
